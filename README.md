@@ -30,6 +30,7 @@ SLURM:
 
 ## DAG
 
+```text
 FASTQ
   │
   ▼
@@ -87,3 +88,4 @@ REALIGN_MT      REALIGN_NUMTS
                     │
                     ▼
                  index
+```
