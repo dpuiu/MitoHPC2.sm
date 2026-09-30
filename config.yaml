@@ -1,0 +1,61 @@
+RNAME: hs38DH
+RMT: chrM
+RNUMT: "chr1:629084-634672 chr17:22521208-22521639"
+RCOUNT: "3366"
+RDIR: RefSeq
+O: Human
+MT: chrM
+MTC: chrMC
+MTR: chrMR
+MTLEN: "16569"
+NUMT: NUMT
+E: "300"
+CN: "1"
+L: "222000"
+FOPT: "-q 15 -e 0"
+DOPT: "--removeDups"
+GOPT: ""
+M: mutect2
+I: "2"
+T1: "03"
+T2: "05"
+T3: "10"
+DP: "25"
+V: ""
+FRULE: tee
+P: 1
+MM: 3G
+JOPT: "-Xms3G -Xmx3G -XX:ParallelGCThreads=1"
+MINAF: 0.01
+MAXDP: 2000
+FDIR: fastq
+ADIR: bams
+ODIR: out
+SOURCE_DIR: scripts
+VARSCAN_HEADER: scripts/varscan.vcf
+resources:
+  ALIGN_REFERENCE: {cpus: 4, mem_mb: 8000}
+  INDEX_ALIGNMENT: {cpus: 2, mem_mb: 4000}
+  COMPUTE_ALIGNMENT_STATS: {cpus: 1, mem_mb: 2000}
+  COMPUTE_MTDNA_COPY_NUMBER: {cpus: 1, mem_mb: 2000}
+  CALCULATE_SUBSAMPLING_RATE: {cpus: 1, mem_mb: 1000}
+  SUBSAMPLE_AND_TRIM: {cpus: 4, mem_mb: 8000}
+  REALIGN_CIRCULARIZED_MT: {cpus: 4, mem_mb: 8000}
+  REALIGN_NUMTS: {cpus: 4, mem_mb: 8000}
+  COMPARE_SCORES: {cpus: 1, mem_mb: 2000}
+  SELECT_MT_READS: {cpus: 1, mem_mb: 2000}
+  FILTER_MT_ALIGNMENTS: {cpus: 4, mem_mb: 8000}
+  COMPUTE_MT_COVERAGE: {cpus: 2, mem_mb: 4000}
+  IDENTIFY_SPLIT_ALIGNMENTS: {cpus: 2, mem_mb: 4000}
+  CALL_SNVS_MUTECT2: {cpus: 4, mem_mb: 8000}
+  CALL_SNVS_MUTSERVE: {cpus: 2, mem_mb: 4000}
+  CALL_SNVS_FREEBAYES: {cpus: 2, mem_mb: 4000}
+  CALL_SNVS_VARSCAN: {cpus: 2, mem_mb: 4000}
+  CALL_SNVS_BCFTOOLS: {cpus: 2, mem_mb: 4000}
+  NORMALIZE_SNVS: {cpus: 1, mem_mb: 2000}
+  IDENTIFY_DOMINANT_SNVS: {cpus: 1, mem_mb: 2000}
+  ANNOTATE_SNVS: {cpus: 1, mem_mb: 2000}
+  IDENTIFY_HAPLOGROUP: {cpus: 1, mem_mb: 2000}
+  CHECK_CONTAMINATION: {cpus: 1, mem_mb: 2000}
+  COMPUTE_SAMPLE_MT: {cpus: 1, mem_mb: 2000}
+  INDEX_SAMPLE_MT: {cpus: 2, mem_mb: 4000}

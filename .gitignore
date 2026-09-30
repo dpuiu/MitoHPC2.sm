@@ -1,0 +1,6 @@
+OLD/
+out/
+bams/
+fastq/
+.snakemake/
+out/*idxstats

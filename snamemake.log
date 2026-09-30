@@ -1,0 +1,52 @@
+snakemake --cores 2
+Building DAG of jobs...
+Using shell: /usr/bin/bash
+Provided cores: 2
+Rules claiming more threads will be scaled down.
+Job stats:
+job                          count
+-------------------------  -------
+COMPUTE_MTDNA_COPY_NUMBER        2
+all                              1
+total                            3
+
+Select jobs to execute...
+
+[Wed Sep 30 14:29:00 2026]
+rule COMPUTE_MTDNA_COPY_NUMBER:
+    input: out/HG00438.idxstats
+    output: out/HG00438.count
+    jobid: 1
+    reason: Missing output files: out/HG00438.count
+    wildcards: sample=HG00438
+    resources: tmpdir=/tmp, mem_mb=2000, mem_mib=1908
+
+
+[Wed Sep 30 14:29:00 2026]
+rule COMPUTE_MTDNA_COPY_NUMBER:
+    input: out/HG00621.idxstats
+    output: out/HG00621.count
+    jobid: 5
+    reason: Missing output files: out/HG00621.count
+    wildcards: sample=HG00621
+    resources: tmpdir=/tmp, mem_mb=2000, mem_mib=1908
+
+[Wed Sep 30 14:29:00 2026]
+Finished job 5.
+1 of 3 steps (33%) done
+[Wed Sep 30 14:29:00 2026]
+Finished job 1.
+2 of 3 steps (67%) done
+Select jobs to execute...
+
+[Wed Sep 30 14:29:00 2026]
+localrule all:
+    input: out/HG00438.count, out/HG00621.count
+    jobid: 0
+    reason: Input files updated by another job: out/HG00438.count, out/HG00621.count
+    resources: tmpdir=/tmp
+
+[Wed Sep 30 14:29:00 2026]
+Finished job 0.
+3 of 3 steps (100%) done
+Complete log: .snakemake/log/2026-09-30T142859.429041.snakemake.log
