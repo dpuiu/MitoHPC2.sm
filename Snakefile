@@ -49,6 +49,8 @@ rule ALIGN_REFERENCE:
     threads: resource("ALIGN_REFERENCE", "cpus")
     resources:
         mem_mb=resource("ALIGN_REFERENCE", "mem_mb")
+    conda:
+        "envs/alignment.yaml"
     shell:
         """
         bwa mem -v 1 -t {threads} -Y \
@@ -66,6 +68,8 @@ rule INDEX_ALIGNMENT:
     threads: resource("INDEX_ALIGNMENT", "cpus")
     resources:
         mem_mb=resource("INDEX_ALIGNMENT", "mem_mb")
+    conda:
+        "envs/alignment.yaml"
     shell:
         "samtools index -@ {threads} {input.bam}"
 
@@ -78,8 +82,14 @@ rule COMPUTE_ALIGNMENT_STATS:
     threads: resource("COMPUTE_ALIGNMENT_STATS", "cpus")
     resources:
         mem_mb=resource("COMPUTE_ALIGNMENT_STATS", "mem_mb")
+    conda:
+        "envs/alignment.yaml"
+    container:
+        "docker://quay.io/biocontainers/samtools:1.22--h96c455f_0"
     shell:
-        "samtools idxstats {input.bam} > {output.idx}"
+        """
+	samtools idxstats {input.bam} > {output.idx}
+	"""
 
 rule COMPUTE_MTDNA_COPY_NUMBER:
     input:
@@ -91,8 +101,8 @@ rule COMPUTE_MTDNA_COPY_NUMBER:
         mem_mb=resource("COMPUTE_MTDNA_COPY_NUMBER", "mem_mb")
     shell:
         """
-        scripts/idxstats2count.pl \
+        idxstats2count.pl \
           --sample {wildcards.sample} \
           --chrM {RMT} \
-          < {input.idx} | scripts/getCN.pl > {output.cnt}
+          < {input.idx} | getCN.pl > {output.cnt}
         """

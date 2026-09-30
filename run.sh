@@ -23,3 +23,25 @@ snakemake --dag | dot -Tsvg > dag.svg
 
 # run and save log
 snakemake --cores 2 >& snakemake.log
+
+# run using conda
+snakemake -c1 --use-conda
+snakemake -c1 --use-conda --conda-frontend conda
+#snakemake -c1 --use-conda --conda-frontend mamba 
+
+# install apptainer
+#sudo apt update
+#sudo apt install -y software-properties-common
+#sudo add-apt-repository ppa:apptainer/ppa
+#sudo apt update
+#sudo apt install -y apptainer
+
+# local sofware
+#bwa: 0.7.17		# 0.7.19(newest)
+#samtools: 1.19.2 	# 1.24(newest)  # 1.22(singularity)
+
+#testing singularity
+singularity pull docker://quay.io/biocontainers/samtools:1.22--h96c455f_0
+singularity exec samtools_1.22--h96c455f_0.sif samtools --version
+
+snakemake -c1 --use-singularity
