@@ -1,0 +1,540 @@
+#
+# Simplified version of the generated Snakefile.
+# Pipeline logic is unchanged.
+
+from glob import glob
+from pathlib import Path
+
+configfile: "config.yaml"
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+R = config["HP_RDIR"]
+
+REF     = f"{R}/{config['HP_RNAME']}.fa"
+MT_REF  = f"{R}/{config['HP_MT']}.fa"
+MTC_REF = f"{R}/{config['HP_MTC']}"
+NUMT_REF = f"{R}/{config['HP_NUMT']}"
+MT_FAI  = f"{R}/{config['HP_MT']}.fa.fai"
+
+FASTQ  = config.get("fastq_dir", "fastq")
+BAMDIR = config.get("bam_dir", "bams")
+OUT    = config.get("out_dir", "out")
+CALLER = config.get("HP_M", "mutect2")
+
+SAMPLES = [
+    Path(f).name.removesuffix("_1.fastq.gz")
+    for f in sorted(glob(f"{FASTQ}/*_1.fastq.gz"))
+]
+
+
+def resource(rule, name):
+    return config["resources"][rule][name]
+
+
+# ---------------------------------------------------------------------------
+# Final targets
+# ---------------------------------------------------------------------------
+
+rule all:
+    input:
+        expand(f"{OUT}/{{sample}}.{CALLER}.00.vcf", sample=SAMPLES),
+        expand(f"{OUT}/{{sample}}.{CALLER}.haplogroup", sample=SAMPLES),
+        expand(f"{OUT}/{{sample}}.{CALLER}.haplocheck", sample=SAMPLES),
+        expand(f"{OUT}/{{sample}}.{CALLER}.fa", sample=SAMPLES),
+        expand(f"{OUT}/{{sample}}.{CALLER}.fa.fai", sample=SAMPLES),
+        expand(f"{OUT}/{{sample}}.{CALLER}.dict", sample=SAMPLES)
+
+
+# ---------------------------------------------------------------------------
+# Alignment
+# ---------------------------------------------------------------------------
+
+rule ALIGN_REFERENCE:
+    input:
+        r1=f"{FASTQ}/{{sample}}_1.fastq.gz",
+        r2=f"{FASTQ}/{{sample}}_2.fastq.gz",
+        reference=REF
+    output:
+        bam=f"{BAMDIR}/{{sample}}.bam"
+    threads: resource("ALIGN_REFERENCE", "cpus")
+    resources:
+        mem_mb=resource("ALIGN_REFERENCE", "mem_mb")
+    shell:
+        """
+        bwa mem -v 1 -t {threads} -Y \
+          -R '@RG\\tID:{wildcards.sample}\\tSM:{wildcards.sample}\\tPL:ILLUMINA' \
+          {input.reference} {input.r1} {input.r2} |
+        samtools view -bu |
+        samtools sort -m {config[HP_MM]} -@ {threads} -o {output.bam}
+        """
+
+
+rule INDEX_ALIGNMENT:
+    input:
+        bam=f"{BAMDIR}/{{sample}}.bam"
+    output:
+        bai=f"{BAMDIR}/{{sample}}.bam.bai"
+    threads: resource("INDEX_ALIGNMENT", "cpus")
+    resources:
+        mem_mb=resource("INDEX_ALIGNMENT", "mem_mb")
+    shell:
+        "samtools index -@ {threads} {input.bam}"
+
+
+rule COMPUTE_ALIGNMENT_STATS:
+    input:
+        bam=f"{BAMDIR}/{{sample}}.bam"
+    output:
+        idx=f"{OUT}/{{sample}}.idxstats"
+    threads: resource("COMPUTE_ALIGNMENT_STATS", "cpus")
+    resources:
+        mem_mb=resource("COMPUTE_ALIGNMENT_STATS", "mem_mb")
+    shell:
+        "samtools idxstats {input.bam} > {output.idx}"
+
+
+rule COMPUTE_MTDNA_COPY_NUMBER:
+    input:
+        idx=f"{OUT}/{{sample}}.idxstats"
+    output:
+        count=f"{OUT}/{{sample}}.count"
+    threads: resource("COMPUTE_MTDNA_COPY_NUMBER", "cpus")
+    resources:
+        mem_mb=resource("COMPUTE_MTDNA_COPY_NUMBER", "mem_mb")
+    shell:
+        """
+        idxstats2count.pl \
+          --sample {wildcards.sample} \
+          --chrM {config[HP_RMT]} \
+          < {input.idx} > {output.count}
+        """
+
+
+rule CALCULATE_SUBSAMPLING_RATE:
+    input:
+        count=f"{OUT}/{{sample}}.count"
+    output:
+        rate=f"{OUT}/{{sample}}.rate"
+    threads: resource("CALCULATE_SUBSAMPLING_RATE", "cpus")
+    resources:
+        mem_mb=resource("CALCULATE_SUBSAMPLING_RATE", "mem_mb")
+    shell:
+        r"""
+        rate=$(tail -1 {input.count} |
+               perl -ane '$r=$ENV{{HP_L}}/($F[-1]+1); print $r if($r<1)')
+        printf '%s\n' "$rate" > {output.rate}
+        """
+
+
+rule SUBSAMPLE_AND_TRIM:
+    input:
+        bam=f"{BAMDIR}/{{sample}}.bam",
+        rate=f"{OUT}/{{sample}}.rate"
+    output:
+        fq=f"{OUT}/{{sample}}.fq"
+    threads: resource("SUBSAMPLE_AND_TRIM", "cpus")
+    resources:
+        mem_mb=resource("SUBSAMPLE_AND_TRIM", "mem_mb")
+    shell:
+        r"""
+        R=$(cat {input.rate})
+        SOPT=""
+        if [ -n "$R" ]; then
+            SOPT="-s $R"
+        fi
+
+        samtools view $SOPT {input.bam} \
+          "{config[HP_RMT]} {config[HP_RNUMT]}" \
+          -bu -F 0x900 -T {REF} -@ {threads} |
+        samtools sort -n -O SAM -m {config[HP_MM]} -@ {threads} |
+        perl -ane 'if(/^@/){{print}} elsif($P[0] eq $F[0]){{print $p,$_}}; @P=@F; $p=$_;' |
+        samblaster {config[HP_DOPT]} --addMateTags |
+        samtools view -bu |
+        bedtools bamtofastq -i /dev/stdin -fq /dev/stdout -fq2 /dev/stdout |
+        fastp --stdin --interleaved_in --stdout {config[HP_FOPT]} > {output.fq}
+        """
+
+
+# ---------------------------------------------------------------------------
+# Mitochondrial / NUMT filtering
+# ---------------------------------------------------------------------------
+
+rule REALIGN_CIRCULARIZED_MT:
+    input:
+        fq=f"{OUT}/{{sample}}.fq"
+    output:
+        sam=temp(f"{OUT}/{{sample}}.mt.sam"),
+        score=f"{OUT}/{{sample}}.mt.score"
+    threads: resource("REALIGN_CIRCULARIZED_MT", "cpus")
+    resources:
+        mem_mb=resource("REALIGN_CIRCULARIZED_MT", "mem_mb")
+    shell:
+        r"""
+        bwa mem {MTC_REF} - -p -v 1 -t {threads} -Y \
+          -R '@RG\\tID:{wildcards.sample}\\tSM:{wildcards.sample}\\tPL:ILLUMINA' \
+          < {input.fq} |
+        samtools view -F 0x10C -h |
+        tee {output.sam} |
+        samtools view -bu |
+        bedtools bamtobed -i /dev/stdin -tag AS |
+        bed2bed.pl -rmsuffix |
+        count.pl -i 3 -j 4 |
+        sort > {output.score}
+        """
+
+
+rule REALIGN_NUMTS:
+    input:
+        fq=f"{OUT}/{{sample}}.fq"
+    output:
+        score=f"{OUT}/{{sample}}.numt.score"
+    threads: resource("REALIGN_NUMTS", "cpus")
+    resources:
+        mem_mb=resource("REALIGN_NUMTS", "mem_mb")
+    shell:
+        r"""
+        bwa mem {NUMT_REF} - -p -v 1 -t {threads} -Y \
+          -R '@RG\\tID:{wildcards.sample}\\tSM:{wildcards.sample}\\tPL:ILLUMINA' \
+          < {input.fq} |
+        samtools view -bu -F 0x10C |
+        bedtools bamtobed -i /dev/stdin -tag AS |
+        bed2bed.pl -rmsuffix |
+        count.pl -i 3 -j 4 |
+        sort > {output.score}
+        """
+
+
+rule COMPARE_SCORES:
+    input:
+        mito=f"{OUT}/{{sample}}.mt.score",
+        numt=f"{OUT}/{{sample}}.numt.score"
+    output:
+        ids=f"{OUT}/{{sample}}.MT.ids"
+    threads: resource("COMPARE_SCORES", "cpus")
+    resources:
+        mem_mb=resource("COMPARE_SCORES", "mem_mb")
+    shell:
+        r"""
+        join {input.mito} {input.numt} -a 1 --nocheck-order |
+        perl -ane 'next if(@F==3 && $F[2]>$F[1]);
+                   print join "\t", @F; print "\n";' > {output.ids}
+        """
+
+
+rule SELECT_MT_READS:
+    input:
+        ids=f"{OUT}/{{sample}}.MT.ids",
+        sam=f"{OUT}/{{sample}}.mt.sam"
+    output:
+        sam=f"{OUT}/{{sample}}.selected.sam"
+    threads: resource("SELECT_MT_READS", "cpus")
+    resources:
+        mem_mb=resource("SELECT_MT_READS", "mem_mb")
+    shell:
+        "intersectSam.pl {input.sam} {input.ids} > {output.sam}"
+
+
+rule FILTER_MT_ALIGNMENTS:
+    input:
+        sam=f"{OUT}/{{sample}}.selected.sam"
+    output:
+        bam=f"{OUT}/{{sample}}.bam",
+        bai=f"{OUT}/{{sample}}.bam.bai",
+        rbam=f"{OUT}/{{sample}}R.bam",
+        rbai=f"{OUT}/{{sample}}R.bam.bai"
+    threads: resource("FILTER_MT_ALIGNMENTS", "cpus")
+    resources:
+        mem_mb=resource("FILTER_MT_ALIGNMENTS", "mem_mb")
+    shell:
+        r"""
+        circSam.pl -ref_len {MT_FAI} -offset 0 {input.sam} |
+        samtools view -bu |
+        samtools sort -m {config[HP_MM]} -@ {threads} -o {output.bam}
+        samtools index -@ {threads} {output.bam}
+
+        circSam.pl -ref_len {MT_FAI} -offset {config[HP_E]} {input.sam} |
+        samtools view -bu |
+        samtools sort -m {config[HP_MM]} -@ {threads} -o {output.rbam}
+        samtools index -@ {threads} {output.rbam}
+        """
+
+
+rule COMPUTE_MT_COVERAGE:
+    input:
+        bam=f"{OUT}/{{sample}}.bam"
+    output:
+        cvg=f"{OUT}/{{sample}}.cvg",
+        stat=f"{OUT}/{{sample}}.cvg.stat"
+    threads: resource("COMPUTE_MT_COVERAGE", "cpus")
+    resources:
+        mem_mb=resource("COMPUTE_MT_COVERAGE", "mem_mb")
+    shell:
+        """
+        bedtools bamtobed -cigar -i {input.bam} |
+        grep '^{config[HP_MT]}' |
+        bedtools genomecov -i - -g {MT_FAI} -d |
+        tee {output.cvg} |
+        cut -f3 |
+        st.pl -sample {wildcards.sample} > {output.stat}
+        """
+
+
+rule IDENTIFY_SPLIT_ALIGNMENTS:
+    input:
+        bam=f"{OUT}/{{sample}}.bam"
+    output:
+        bed=f"{OUT}/{{sample}}.sa.bed"
+    threads: resource("IDENTIFY_SPLIT_ALIGNMENTS", "cpus")
+    resources:
+        mem_mb=resource("IDENTIFY_SPLIT_ALIGNMENTS", "mem_mb")
+    shell:
+        """
+        samtools view -h -@ {threads} {input.bam} |
+        sam2bedSA.pl |
+        uniq.pl -i 3 |
+        sort -k2,2n -k3,3n > {output.bed}
+        """
+
+
+# ---------------------------------------------------------------------------
+# SNV calling -- first iteration
+# ---------------------------------------------------------------------------
+
+rule CALL_SNVS:
+    input:
+        bam=f"{OUT}/{{sample}}.bam"
+    output:
+        vcf=f"{OUT}/{{sample}}.{{caller}}.vcf"
+    threads:
+        lambda wc: resource(f"CALL_SNVS_{wc.caller.upper()}", "cpus")
+    resources:
+        mem_mb=lambda wc: resource(
+            f"CALL_SNVS_{wc.caller.upper()}", "mem_mb"
+        )
+    params:
+        minaf=config.get("MINAF", 0.01),
+        maxdp=config.get("MAXDP", 2000)
+    shell:
+        r"""
+        case "{wildcards.caller}" in
+
+        mutect2)
+            gatk --java-options "{config[HP_JOPT]}" Mutect2 \
+              -R {MT_REF} \
+              -I {input.bam} \
+              -O {wildcards.sample}.orig.vcf \
+              {config[HP_GOPT]} \
+              --native-pair-hmm-threads {threads} \
+              --callable-depth 6 \
+              --max-reads-per-alignment-start 0 \
+              -min-AF {params.minaf}
+
+            gatk --java-options "{config[HP_JOPT]}" FilterMutectCalls \
+              -R {MT_REF} \
+              -V {wildcards.sample}.orig.vcf \
+              -O {output.vcf} \
+              --min-reads-per-strand 2
+            ;;
+
+        mutserve)
+            mutserve call \
+              --deletions \
+              --insertions \
+              --level {params.minaf} \
+              --output {output.vcf} \
+              --reference {MT_REF} \
+              {input.bam}
+            ;;
+
+        freebayes)
+            freebayes \
+              -p 1 \
+              --pooled-continuous \
+              --min-alternate-fraction {params.minaf} \
+              {input.bam} \
+              -f {MT_REF} > {output.vcf}
+            ;;
+
+        varscan)
+            samtools mpileup -f {MT_REF} {input.bam} \
+              -r {config[HP_MT]} -B -d {params.maxdp} |
+            varscan mpileup2snp \
+              --min-coverage {config[HP_DP]} \
+              -B --variants \
+              --min-var-freq {params.minaf} \
+              --output-vcf 1 > {wildcards.sample}.orig.vcf
+
+            samtools mpileup -f {MT_REF} {input.bam} \
+              -r {config[HP_MT]} -B -d {params.maxdp} |
+            varscan mpileup2indel \
+              --min-coverage {config[HP_DP]} \
+              -B --variants \
+              --min-var-freq {params.minaf} \
+              --output-vcf 1 |
+            grep -v '^#' >> {wildcards.sample}.orig.vcf
+
+            cat {config[VARSCAN_HEADER]} > {output.vcf}
+            perl -ane 'print "##contig=<ID=$F[0],length=$F[1]>\\n"' \
+              {MT_FAI} >> {output.vcf}
+
+            printf '#CHROM\\tPOS\\tID\\tREF\\tALT\\tQUAL\\tFILTER\\tINFO\\tFORMAT\\t%s\\n' \
+              '{wildcards.sample}' >> {output.vcf}
+
+            bcftools query \
+              -f '%CHROM\\t%POS\\t%ID\\t%REF\\t%ALT\\t%QUAL\\t%FILTER\\t.\\tGT:DP:AD:AF\\t[%GT:%DP:%AD:%FREQ]\\n' \
+              {wildcards.sample}.orig.vcf |
+            sort -k2,2n >> {output.vcf}
+            ;;
+
+        bcftools)
+            bcftools mpileup \
+              -f {MT_REF} {input.bam} \
+              -d {params.maxdp} |
+            bcftools call --ploidy 2 -mv -Ov > {output.vcf}
+            ;;
+
+        *)
+            echo "Unsupported caller: {wildcards.caller}" >&2
+            exit 1
+            ;;
+        esac
+        """
+
+
+rule NORMALIZE_SNVS:
+    input:
+        vcf=f"{OUT}/{{sample}}.{{caller}}.vcf"
+    output:
+        fix=f"{OUT}/{{sample}}.{{caller}}.fix.vcf"
+    threads: resource("NORMALIZE_SNVS", "cpus")
+    resources:
+        mem_mb=resource("NORMALIZE_SNVS", "mem_mb")
+    shell:
+        """
+        bcftools norm -m-any -f {MT_REF} {input.vcf} |
+        fix{wildcards.caller}Vcf.pl -file {MT_REF} |
+        bedtools sort -header > {output.fix}
+        """
+
+
+rule IDENTIFY_DOMINANT_SNVS:
+    input:
+        fix=f"{OUT}/{{sample}}.{{caller}}.fix.vcf"
+    output:
+        max=f"{OUT}/{{sample}}.{{caller}}.max.vcf",
+        gz=f"{OUT}/{{sample}}.{{caller}}.max.vcf.gz",
+        tbi=f"{OUT}/{{sample}}.{{caller}}.max.vcf.gz.tbi"
+    threads: resource("IDENTIFY_DOMINANT_SNVS", "cpus")
+    resources:
+        mem_mb=resource("IDENTIFY_DOMINANT_SNVS", "mem_mb")
+    shell:
+        """
+        maxVcf.pl < {input.fix} |
+        bedtools sort -header |
+        tee {output.max} |
+        bgzip -c > {output.gz}
+
+        tabix -f {output.gz}
+        """
+
+
+rule FILTER_AND_ANNOTATE_SNVS:
+    input:
+        fix=f"{OUT}/{{sample}}.{{caller}}.fix.vcf",
+        max=f"{OUT}/{{sample}}.{{caller}}.max.vcf"
+    output:
+        vcf=f"{OUT}/{{sample}}.{{caller}}.00.vcf",
+        annotated=f"{OUT}/{{sample}}.{{caller}}.00.annotated.vcf"
+    threads: resource("ANNOTATE_SNVS", "cpus")
+    resources:
+        mem_mb=resource("ANNOTATE_SNVS", "mem_mb")
+    shell:
+        """
+        filterVcf.pl \
+          -sample {wildcards.sample} \
+          -source {wildcards.caller} \
+          -header {config[SOURCE_DIR]}/{wildcards.caller}.vcf \
+          -depth {config[HP_DP]} \
+          < {input.fix} |
+        uniqVcf.pl |
+        bedtools sort -header > {output.vcf}
+
+        annotateVcf.sh {output.vcf}
+        mv {output.vcf}.annotated.vcf {output.annotated}
+        """
+
+
+rule IDENTIFY_HAPLOGROUP:
+    input:
+        vcf=f"{OUT}/{{sample}}.{{caller}}.00.annotated.vcf"
+    output:
+        haplogroup=f"{OUT}/{{sample}}.{{caller}}.haplogroup"
+    threads: resource("IDENTIFY_HAPLOGROUP", "cpus")
+    resources:
+        mem_mb=resource("IDENTIFY_HAPLOGROUP", "mem_mb")
+    shell:
+        """
+        haplogrep classify \
+          --in {input.vcf} \
+          --format vcf \
+          --out {output.haplogroup}
+        """
+
+
+rule CHECK_CONTAMINATION:
+    input:
+        vcf=f"{OUT}/{{sample}}.{{caller}}.00.annotated.vcf"
+    output:
+        haplocheck=f"{OUT}/{{sample}}.{{caller}}.haplocheck"
+    threads: resource("CHECK_CONTAMINATION", "cpus")
+    resources:
+        mem_mb=resource("CHECK_CONTAMINATION", "mem_mb")
+    shell:
+        "haplocheck --out {output.haplocheck} {input.vcf}"
+
+
+rule COMPUTE_SAMPLE_MT:
+    input:
+        vcf=f"{OUT}/{{sample}}.{{caller}}.00.annotated.vcf",
+        reference=MT_REF
+    output:
+        fasta=f"{OUT}/{{sample}}.{{caller}}.fa"
+    threads: resource("COMPUTE_SAMPLE_MT", "cpus")
+    resources:
+        mem_mb=resource("COMPUTE_SAMPLE_MT", "mem_mb")
+    shell:
+        r"""
+        bcftools consensus -f {input.reference} {input.vcf} -H A |
+        perl -ane '
+            chomp;
+            if ($. == 1) {{
+                print ">{wildcards.sample}\n"
+            }} else {{
+                s/N//g;
+                print
+            }}
+            END {{ print "\n" }}
+        ' > {output.fasta}
+        """
+
+
+rule INDEX_SAMPLE_MT:
+    input:
+        fasta=f"{OUT}/{{sample}}.{{caller}}.fa"
+    output:
+        fai=f"{OUT}/{{sample}}.{{caller}}.fa.fai",
+        dict=f"{OUT}/{{sample}}.{{caller}}.dict"
+    threads: resource("INDEX_SAMPLE_MT", "cpus")
+    resources:
+        mem_mb=resource("INDEX_SAMPLE_MT", "mem_mb")
+    shell:
+        """
+        samtools faidx {input.fasta}
+
+        gatk --java-options "{config[HP_JOPT]}" CreateSequenceDictionary \
+          --REFERENCE {input.fasta} \
+          --OUTPUT {output.dict}
+        """
