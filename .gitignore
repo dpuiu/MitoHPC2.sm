@@ -4,3 +4,4 @@ bams/
 fastq/
 .snakemake/
 out/*idxstats
+*log
